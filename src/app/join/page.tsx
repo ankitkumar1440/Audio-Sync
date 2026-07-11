@@ -102,8 +102,8 @@ export default function Join() {
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!roomCode || roomCode.length !== 6) {
-      setError('Please enter a valid 6-character room code.');
+    if (!roomCode || roomCode.length !== 4) {
+      setError('Please enter a valid 4-digit room code.');
       return;
     }
 
@@ -423,10 +423,10 @@ export default function Join() {
               <input
                 id="code"
                 type="text"
-                maxLength={6}
-                placeholder="e.g. A7K92P"
+                maxLength={4}
+                placeholder="e.g. 1234"
                 value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                onChange={(e) => setRoomCode(e.target.value.replace(/\D/g, ''))}
                 className="input-field"
                 style={{ textAlign: 'center', fontSize: '1.5rem', letterSpacing: '0.2em', fontWeight: 700 }}
                 autoFocus
