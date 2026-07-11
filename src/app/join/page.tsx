@@ -2,20 +2,29 @@
 
 import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
-import { io, Socket } from 'socket.io-client';
+import { 
+  doc, 
+  getDoc, 
+  setDoc, 
+  deleteDoc, 
+  collection, 
+  addDoc, 
+  onSnapshot, 
+  updateDoc, 
+  Unsubscribe 
+} from 'firebase/firestore';
+import { getDb } from '../../lib/firebase';
 import { ArrowLeft, Disc, Volume2, VolumeX, AlertCircle, Info, Play, RefreshCw, XCircle } from 'lucide-react';
 
 export default function Join() {
   const [roomCode, setRoomCode] = useState<string>('');
   const [joined, setJoined] = useState<boolean>(false);
-  const [connected, setConnected] = useState<boolean>(false);
   const [webrtcState, setWebrtcState] = useState<string>('disconnected');
   const [error, setError] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('Enter code to connect.');
   const [autoplayBlocked, setAutoplayBlocked] = useState<boolean>(false);
   const [audioStreamActive, setAudioStreamActive] = useState<boolean>(false);
 
-  const socketRef = useRef<Socket | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -23,8 +32,9 @@ export default function Join() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const iceCandidateQueueRef = useRef<RTCIceCandidateInit[]>([]);
-  const hostIdRef = useRef<string>('');
+  const activePeerIdRef = useRef<string>('');
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const clientUnsubscribesRef = useRef<Unsubscribe[]>([]);
 
   const rtcConfig: RTCConfiguration = {
     iceServers: [
@@ -40,6 +50,7 @@ export default function Join() {
     return () => {
       cleanup();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function cleanup() {
@@ -55,11 +66,10 @@ export default function Join() {
       peerConnectionRef.current = null;
     }
 
-    // Disconnect socket
-    if (socketRef.current) {
-      socketRef.current.disconnect();
-      socketRef.current = null;
-    }
+    // Unsubscribe from Firestore listeners
+    const unsubs = clientUnsubscribesRef.current;
+    unsubs.forEach((unsub) => unsub());
+    clientUnsubscribesRef.current = [];
 
     // Close audio context
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
@@ -72,11 +82,25 @@ export default function Join() {
       audioElementRef.current.srcObject = null;
     }
     
+    // Delete peer document from Firestore
+    const peerId = activePeerIdRef.current;
+    if (peerId && roomCode) {
+      try {
+        const db = getDb();
+        const peerDocRef = doc(db, 'rooms', roomCode, 'peers', peerId);
+        deleteDoc(peerDocRef);
+        console.log(`Removed peer: ${peerId}`);
+      } catch (e) {
+        console.error('Error removing peer doc:', e);
+      }
+    }
+
     mediaStreamRef.current = null;
     iceCandidateQueueRef.current = [];
+    activePeerIdRef.current = '';
   }
 
-  const handleJoin = (e: React.FormEvent) => {
+  const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!roomCode || roomCode.length !== 4) {
       setError('Please enter a valid 4-digit room code.');
@@ -87,45 +111,56 @@ export default function Join() {
     cleanup();
     setStatusMessage('Connecting...');
 
-    const serverUrl = process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || 'http://localhost:3001';
-    const socket = io(serverUrl);
-    socketRef.current = socket;
+    try {
+      const db = getDb();
+      const roomDocRef = doc(db, 'rooms', roomCode);
+      
+      // 1. Verify if the room exists
+      const roomSnap = await getDoc(roomDocRef);
+      if (!roomSnap.exists()) {
+        setError('Room not found. Please verify the room code.');
+        setStatusMessage('Connection failed.');
+        return;
+      }
 
-    socket.on('connect', () => {
-      setConnected(true);
-      socket.emit('join-room', { roomCode }, (response: { success: boolean; hostId?: string; error?: string }) => {
-        if (response.success && response.hostId) {
-          setJoined(true);
-          hostIdRef.current = response.hostId;
-          setStatusMessage('Waiting for Host to start sharing audio...');
-          setWebrtcState('connecting');
-        } else {
-          setError(response.error || 'Failed to join room.');
-          setStatusMessage('Connection failed.');
-          socket.disconnect();
-        }
+      // 2. Generate a random client peerId
+      const peerId = Math.random().toString(36).substring(2, 10);
+      activePeerIdRef.current = peerId;
+
+      // 3. Create peer document in Firestore
+      const peerDocRef = doc(db, 'rooms', roomCode, 'peers', peerId);
+      await setDoc(peerDocRef, { joinedAt: new Date() });
+      
+      setJoined(true);
+      setStatusMessage('Waiting for Host to start sharing audio...');
+      setWebrtcState('connecting');
+
+      // 4. Listen for ICE Candidates written by the Host
+      const hostCandidatesRef = collection(db, 'rooms', roomCode, 'peers', peerId, 'hostCandidates');
+      const unsubHostCand = onSnapshot(hostCandidatesRef, (snap) => {
+        snap.docChanges().forEach(async (change) => {
+          if (change.type === 'added') {
+            const candidateData = change.doc.data() as RTCIceCandidateInit;
+            const pc = peerConnectionRef.current;
+            if (pc && pc.remoteDescription) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+              } catch (err) {
+                console.error('Error adding host candidate:', err);
+              }
+            } else {
+              // Queue candidate
+              iceCandidateQueueRef.current.push(candidateData);
+            }
+          }
+        });
       });
-    });
+      clientUnsubscribesRef.current.push(unsubHostCand);
 
-    socket.on('disconnect', () => {
-      setConnected(false);
-      setWebrtcState('disconnected');
-      setStatusMessage('Disconnected from server.');
-    });
-
-    socket.on('host-disconnected', () => {
-      setError('The host disconnected. The session has ended.');
-      setStatusMessage('Session ended.');
-      cleanup();
-      setJoined(false);
-      setAudioStreamActive(false);
-    });
-
-    // Received signaling data (Offer or ICE candidate) from the Host
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    socket.on('signal', async ({ senderId, data }: { senderId: string; data: any }) => {
-      try {
-        if (data.type === 'offer') {
+      // 5. Listen for Offer written by Host to the peer document
+      const unsubPeerDoc = onSnapshot(peerDocRef, async (snap) => {
+        const data = snap.data();
+        if (data && data.offer && !peerConnectionRef.current) {
           console.log('Received WebRTC Offer from host');
           setWebrtcState('connecting');
           setStatusMessage('Establishing synchronized connection...');
@@ -134,12 +169,14 @@ export default function Join() {
           peerConnectionRef.current = pc;
 
           // Send local candidates back to Host
-          pc.onicecandidate = (event) => {
-            if (event.candidate && socketRef.current) {
-              socketRef.current.emit('signal', {
-                targetId: senderId,
-                data: { candidate: event.candidate }
-              });
+          pc.onicecandidate = async (event) => {
+            if (event.candidate) {
+              try {
+                const clientCandRef = collection(db, 'rooms', roomCode, 'peers', peerId, 'clientCandidates');
+                await addDoc(clientCandRef, event.candidate.toJSON());
+              } catch (err) {
+                console.error('Error sending client candidate:', err);
+              }
             }
           };
 
@@ -180,42 +217,51 @@ export default function Join() {
             }
           };
 
-          // Apply Offer
-          await pc.setRemoteDescription(new RTCSessionDescription(data));
+          try {
+            // Apply Offer
+            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
 
-          // Apply all queued ICE candidates
-          const queue = iceCandidateQueueRef.current;
-          for (const candidate of queue) {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          }
-          iceCandidateQueueRef.current = [];
+            // Apply all queued ICE candidates
+            const queue = iceCandidateQueueRef.current;
+            for (const candidateData of queue) {
+              await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+            }
+            iceCandidateQueueRef.current = [];
 
-          // Create and send Answer
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          
-          if (socketRef.current) {
-            socketRef.current.emit('signal', {
-              targetId: senderId,
-              data: { type: 'answer', sdp: answer.sdp }
+            // Create and save WebRTC Answer to Firestore
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            
+            await updateDoc(peerDocRef, {
+              answer: { sdp: answer.sdp, type: 'answer' }
             });
-          }
-        } else if (data.candidate) {
-          const candidate = new RTCIceCandidate(data.candidate);
-          const pc = peerConnectionRef.current;
-          
-          if (pc && pc.remoteDescription) {
-            await pc.addIceCandidate(candidate);
-          } else {
-            // Queue ICE candidate if peer connection not ready/remote description not set
-            iceCandidateQueueRef.current.push(data.candidate);
+            console.log('Sent WebRTC Answer to host');
+          } catch (err) {
+            console.error('Error establishing peer connection:', err);
+            setError('Error setting up WebRTC handshake.');
           }
         }
-      } catch (err) {
-        console.error('Error handling WebRTC signal:', err);
-        setError('Error establishing peer connection.');
-      }
-    });
+      });
+      clientUnsubscribesRef.current.push(unsubPeerDoc);
+
+      // 6. Listen for Room teardown (if Host deletes the room document)
+      const unsubRoom = onSnapshot(roomDocRef, (snap) => {
+        if (!snap.exists()) {
+          setError('The host disconnected. The session has ended.');
+          setStatusMessage('Session ended.');
+          cleanup();
+          setJoined(false);
+          setAudioStreamActive(false);
+        }
+      });
+      clientUnsubscribesRef.current.push(unsubRoom);
+
+    } catch (err) {
+      console.error('Error joining Firestore room:', err);
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      setError(errorMsg || 'Failed to connect. Please verify your Firebase settings.');
+      setStatusMessage('Connection failed.');
+    }
   };
 
   const handleManualResume = () => {
@@ -344,8 +390,8 @@ export default function Join() {
             <ArrowLeft size={16} /> Back
           </Link>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            <span className={connected ? "pulse-indicator" : ""} style={{ backgroundColor: connected ? '#22c55e' : '#ef4444' }}></span>
-            {connected ? 'Sync Server Connected' : 'Not Connected'}
+            <span className="pulse-indicator" style={{ backgroundColor: '#22c55e' }}></span>
+            Serverless Firestore Sync
           </div>
         </div>
 
@@ -478,7 +524,6 @@ export default function Join() {
           </p>
         </div>
       </div>
-
     </main>
   );
 }

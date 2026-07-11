@@ -2,21 +2,31 @@
 
 import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
-import { io, Socket } from 'socket.io-client';
+import { 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  Unsubscribe 
+} from 'firebase/firestore';
+import { getDb } from '../../lib/firebase';
 import { Disc, Radio, AlertCircle, Users, Power, ArrowLeft, CheckCircle2, Info } from 'lucide-react';
 
 export default function Host() {
   const [roomCode, setRoomCode] = useState<string>('');
-  const [connected, setConnected] = useState<boolean>(false);
   const [sharingAudio, setSharingAudio] = useState<boolean>(false);
   const [clients, setClients] = useState<string[]>([]);
   const [error, setError] = useState<string>('');
-  const [statusMessage, setStatusMessage] = useState<string>('Connecting to signaling server...');
+  const [statusMessage, setStatusMessage] = useState<string>('Initializing Firebase...');
 
-  const socketRef = useRef<Socket | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const iceQueuesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const peerUnsubscribesRef = useRef<Map<string, Unsubscribe[]>>(new Map());
+  const roomUnsubscribeRef = useRef<Unsubscribe | null>(null);
 
   // WebRTC ice configuration using public STUN servers
   const rtcConfig: RTCConfiguration = {
@@ -29,20 +39,26 @@ export default function Host() {
     ]
   };
 
-  // Initialize a WebRTC connection with a receiver
-  const initPeerConnection = async (peerId: string) => {
+  // Initialize a WebRTC connection with a receiver using Firestore signaling
+  const initPeerConnection = async (peerId: string, code: string) => {
     console.log(`Initializing peer connection for ${peerId}`);
+    const db = getDb();
     const pc = new RTCPeerConnection(rtcConfig);
     peerConnectionsRef.current.set(peerId, pc);
     iceQueuesRef.current.set(peerId, []);
 
-    // Send local candidate to target receiver
-    pc.onicecandidate = (event) => {
-      if (event.candidate && socketRef.current) {
-        socketRef.current.emit('signal', {
-          targetId: peerId,
-          data: { candidate: event.candidate }
-        });
+    // Create array to hold unsubscribe functions for this client
+    const clientUnsubs: Unsubscribe[] = [];
+
+    // Send local candidate to target receiver via Firestore
+    pc.onicecandidate = async (event) => {
+      if (event.candidate) {
+        try {
+          const candidatesCollection = collection(db, 'rooms', code, 'peers', peerId, 'hostCandidates');
+          await addDoc(candidatesCollection, event.candidate.toJSON());
+        } catch (e) {
+          console.error(`Error saving host candidate for peer ${peerId}:`, e);
+        }
       }
     };
 
@@ -50,7 +66,55 @@ export default function Host() {
       console.log(`Peer connection state change for ${peerId}: ${pc.connectionState}`);
     };
 
-    // If host is already sharing audio, attach the tracks immediately
+    // 1. Listen for ICE Candidates written by the client
+    const clientCandidatesRef = collection(db, 'rooms', code, 'peers', peerId, 'clientCandidates');
+    const unsubClientCand = onSnapshot(clientCandidatesRef, (snap) => {
+      snap.docChanges().forEach(async (change) => {
+        if (change.type === 'added') {
+          const candidateData = change.doc.data() as RTCIceCandidateInit;
+          if (pc.remoteDescription) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+            } catch (e) {
+              console.error(`Error adding client candidate for ${peerId}:`, e);
+            }
+          } else {
+            // Queue candidate
+            const queue = iceQueuesRef.current.get(peerId) || [];
+            queue.push(candidateData);
+            iceQueuesRef.current.set(peerId, queue);
+          }
+        }
+      });
+    });
+    clientUnsubs.push(unsubClientCand);
+
+    // 2. Listen for the WebRTC Answer written by the client
+    const peerDocRef = doc(db, 'rooms', code, 'peers', peerId);
+    const unsubPeerDoc = onSnapshot(peerDocRef, async (snap) => {
+      const data = snap.data();
+      if (data && data.answer && !pc.remoteDescription) {
+        console.log(`Received WebRTC answer from client ${peerId}`);
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          
+          // Process queued candidates now that remote description is active
+          const queue = iceQueuesRef.current.get(peerId) || [];
+          for (const candidateData of queue) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+          }
+          iceQueuesRef.current.set(peerId, []);
+        } catch (e) {
+          console.error(`Error setting remote answer for ${peerId}:`, e);
+        }
+      }
+    });
+    clientUnsubs.push(unsubPeerDoc);
+
+    // Store the unsubscribes
+    peerUnsubscribesRef.current.set(peerId, clientUnsubs);
+
+    // If host is already sharing audio, attach the tracks immediately and create Offer
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         if (localStreamRef.current) {
@@ -58,17 +122,14 @@ export default function Host() {
         }
       });
       
-      // Create and send offer
       try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         
-        if (socketRef.current) {
-          socketRef.current.emit('signal', {
-            targetId: peerId,
-            data: { type: 'offer', sdp: offer.sdp }
-          });
-        }
+        await updateDoc(peerDocRef, {
+          offer: { sdp: offer.sdp, type: 'offer' }
+        });
+        console.log(`Sent offer to client ${peerId}`);
       } catch (err) {
         console.error(`Error creating offer for ${peerId}:`, err);
       }
@@ -83,113 +144,108 @@ export default function Host() {
       peerConnectionsRef.current.delete(peerId);
     }
     iceQueuesRef.current.delete(peerId);
+
+    // Unsubscribe from Firestore updates for this client
+    const unsubs = peerUnsubscribesRef.current.get(peerId);
+    if (unsubs) {
+      unsubs.forEach((unsub) => unsub());
+      peerUnsubscribesRef.current.delete(peerId);
+    }
   };
 
   useEffect(() => {
-    // Determine signaling server URL (from env variable or local fallback)
-    const serverUrl = process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || 'http://localhost:3001';
-    
-    // Connect to Socket.io server
-    const socket = io(serverUrl);
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      console.log('Connected to signaling server');
-      setConnected(true);
-      setStatusMessage('Creating synchronization room...');
-      
-      // Request room creation
-      socket.emit('create-room', (response: { success: boolean; roomCode?: string; error?: string }) => {
-        if (response.success && response.roomCode) {
-          setRoomCode(response.roomCode);
-          setStatusMessage('Room ready. Share code with other devices.');
-        } else {
-          setError(response.error || 'Failed to create room.');
-          setStatusMessage('Initialization failed.');
-        }
-      });
-    });
-
-    socket.on('disconnect', () => {
-      console.log('Disconnected from signaling server');
-      setConnected(false);
-      setStatusMessage('Disconnected from server. Reconnecting...');
-    });
-
-    // A receiver joined our room
-    socket.on('peer-joined', async ({ peerId }: { peerId: string }) => {
-      console.log(`Peer joined: ${peerId}`);
-      setClients((prev) => [...prev, peerId]);
-      
-      // Initialize peer connection for this client
-      await initPeerConnection(peerId);
-    });
-
-    // A receiver left our room
-    socket.on('peer-disconnected', ({ peerId }: { peerId: string }) => {
-      console.log(`Peer disconnected: ${peerId}`);
-      closePeerConnection(peerId);
-      setClients((prev) => prev.filter((id) => id !== peerId));
-    });
-
-    // Received signaling data (Answer or ICE candidate) from a client
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    socket.on('signal', async ({ senderId, data }: { senderId: string; data: any }) => {
-      const pc = peerConnectionsRef.current.get(senderId);
-      if (!pc) return;
-
-      try {
-        if (data.type === 'answer') {
-          console.log(`Received answer from client ${senderId}`);
-          await pc.setRemoteDescription(new RTCSessionDescription(data));
-          
-          // Process queued ICE candidates now that remote description is set
-          const queue = iceQueuesRef.current.get(senderId) || [];
-          for (const candidate of queue) {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          }
-          iceQueuesRef.current.set(senderId, []);
-        } else if (data.candidate) {
-          const iceCandidate = new RTCIceCandidate(data.candidate);
-          if (pc.remoteDescription) {
-            await pc.addIceCandidate(iceCandidate);
-          } else {
-            // Queue ICE candidate if remote description is not set yet
-            const queue = iceQueuesRef.current.get(senderId) || [];
-            queue.push(data.candidate);
-            iceQueuesRef.current.set(senderId, queue);
-          }
-        }
-      } catch (err) {
-        console.error(`Error handling signal from peer ${senderId}:`, err);
-      }
-    });
-
+    let activeRoomCode = '';
     const peerConnections = peerConnectionsRef.current;
+    const peerUnsubscribes = peerUnsubscribesRef.current;
+    
+    const setupRoom = async () => {
+      try {
+        const db = getDb();
+        
+        // Generate random 4-digit code
+        const code = Math.floor(1000 + Math.random() * 9000).toString();
+        activeRoomCode = code;
+        setRoomCode(code);
+        
+        setStatusMessage('Creating synchronization room in Firestore...');
+        
+        // Create Room document in Firestore
+        const roomRef = doc(db, 'rooms', code);
+        await setDoc(roomRef, { createdAt: new Date() });
+        
+        setStatusMessage('Room ready. Share code with other devices.');
+
+        // Listen for new peers joining the room
+        const peersRef = collection(db, 'rooms', code, 'peers');
+        const unsubscribePeers = onSnapshot(peersRef, (snapshot) => {
+          snapshot.docChanges().forEach(async (change) => {
+            const peerId = change.doc.id;
+            if (change.type === 'added') {
+              console.log(`Firestore Peer joined: ${peerId}`);
+              setClients((prev) => [...prev, peerId]);
+              await initPeerConnection(peerId, code);
+            } else if (change.type === 'removed') {
+              console.log(`Firestore Peer left: ${peerId}`);
+              closePeerConnection(peerId);
+              setClients((prev) => prev.filter((id) => id !== peerId));
+            }
+          });
+        });
+
+        roomUnsubscribeRef.current = unsubscribePeers;
+      } catch (err) {
+        console.error('Firebase Room Setup Error:', err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        setError(errorMsg);
+        setStatusMessage('Initialization failed.');
+      }
+    };
+
+    setupRoom();
 
     return () => {
       // Cleanup on unmount
-      if (socketRef.current) {
-        socketRef.current.disconnect();
+      if (roomUnsubscribeRef.current) {
+        roomUnsubscribeRef.current();
       }
       
       // Stop all peer connections
       peerConnections.forEach((pc) => pc.close());
       peerConnections.clear();
+
+      // Unsubscribe from all peer-specific Firestore updates
+      peerUnsubscribes.forEach((unsubs) => {
+        unsubs.forEach((unsub) => unsub());
+      });
+      peerUnsubscribes.clear();
       
       // Stop local audio capture
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+
+      // Delete Room document from Firestore
+      if (activeRoomCode) {
+        try {
+          const db = getDb();
+          const roomRef = doc(db, 'rooms', activeRoomCode);
+          deleteDoc(roomRef);
+          console.log(`Teared down room: ${activeRoomCode}`);
+        } catch (e) {
+          console.error('Error tearing down room:', e);
+        }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
 
+
   // Start capturing tab audio
   const startAudioSharing = async () => {
     setError('');
     try {
+      const db = getDb();
       // Prompt user to select screen/tab to share
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true, // Required to capture tab audio in Chrome/Firefox
@@ -228,12 +284,10 @@ export default function Host() {
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           
-          if (socketRef.current) {
-            socketRef.current.emit('signal', {
-              targetId: peerId,
-              data: { type: 'offer', sdp: offer.sdp }
-            });
-          }
+          const peerDocRef = doc(db, 'rooms', roomCode, 'peers', peerId);
+          await updateDoc(peerDocRef, {
+            offer: { sdp: offer.sdp, type: 'offer' }
+          });
         }
       }
     } catch (err) {
@@ -253,11 +307,10 @@ export default function Host() {
     setSharingAudio(false);
     setStatusMessage('Room ready. Share code with other devices.');
 
-    // Remove tracks and close current peer connections (they will reconnect/reset on answer renegotiation)
+    // Remove tracks and close current peer connections (recreating them resets state)
     peerConnectionsRef.current.forEach((pc, peerId) => {
-      // Re-create an empty peer connection to reset streams
       pc.close();
-      initPeerConnection(peerId);
+      initPeerConnection(peerId, roomCode);
     });
   };
 
@@ -286,8 +339,8 @@ export default function Host() {
             <ArrowLeft size={16} /> Back
           </Link>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            <span className={connected ? "pulse-indicator" : ""} style={{ backgroundColor: connected ? '#22c55e' : '#ef4444' }}></span>
-            {connected ? 'Server Connected' : 'Server Disconnected'}
+            <span className="pulse-indicator" style={{ backgroundColor: '#22c55e' }}></span>
+            Serverless Firestore Sync
           </div>
         </div>
 
@@ -427,7 +480,6 @@ export default function Host() {
           )}
         </div>
       </div>
-
     </main>
   );
 }
