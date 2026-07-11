@@ -48,6 +48,10 @@ export function isFirebaseConfigured(): boolean {
   return getFirebaseConfig() !== null;
 }
 
+export function isConfigFromEnv(): boolean {
+  return isEnvConfigComplete;
+}
+
 export function setLocalFirebaseConfig(config: FirebaseConfig) {
   if (typeof window !== 'undefined') {
     localStorage.setItem('audiosync_firebase_config', JSON.stringify(config));

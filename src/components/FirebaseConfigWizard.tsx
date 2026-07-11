@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { setLocalFirebaseConfig, getFirebaseConfig, FirebaseConfig } from '../lib/firebase';
+import { setLocalFirebaseConfig, getFirebaseConfig, FirebaseConfig, isConfigFromEnv, resetFirebaseConfig } from '../lib/firebase';
 import { Check, Settings, ShieldAlert, ArrowRight, HelpCircle } from 'lucide-react';
 
 interface FirebaseConfigWizardProps {
@@ -10,6 +10,8 @@ interface FirebaseConfigWizardProps {
 }
 
 export default function FirebaseConfigWizard({ onClose, showCancel = false }: FirebaseConfigWizardProps) {
+  const configFromEnv = isConfigFromEnv();
+  const [hasLocalOverride, setHasLocalOverride] = useState<boolean>(false);
   const [rawConfig, setRawConfig] = useState<string>('');
   const [apiKey, setApiKey] = useState<string>('');
   const [projectId, setProjectId] = useState<string>('');
@@ -21,6 +23,14 @@ export default function FirebaseConfigWizard({ onClose, showCancel = false }: Fi
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'paste' | 'manual'>('paste');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setTimeout(() => {
+        setHasLocalOverride(!!localStorage.getItem('audiosync_firebase_config'));
+      }, 0);
+    }
+  }, []);
 
   useEffect(() => {
     // Populate fields if config already exists locally
@@ -118,6 +128,66 @@ export default function FirebaseConfigWizard({ onClose, showCancel = false }: Fi
       setError('Failed to save configuration.');
     }
   };
+
+  if (configFromEnv) {
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(2, 6, 23, 0.85)',
+        backdropFilter: 'blur(12px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 9999,
+        padding: '1.5rem'
+      }}>
+        <div className="glass-panel" style={{ maxWidth: '440px', width: '100%', padding: '2rem', textAlign: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+            <div style={{
+              width: '56px',
+              height: '56px',
+              borderRadius: '50%',
+              background: 'rgba(34, 197, 94, 0.1)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: '1px solid rgba(34, 197, 94, 0.2)',
+              color: '#4ade80'
+            }}>
+              <Check size={28} />
+            </div>
+            <h2 style={{ fontSize: '1.3rem', fontWeight: 700 }}>System Configured</h2>
+          </div>
+          
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', lineHeight: '1.5', marginBottom: '2rem' }}>
+            This instance of Audiosync is pre-configured securely via system environment variables. Your keys are hidden and protected.
+          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {onClose && (
+              <button type="button" onClick={onClose} className="btn btn-primary" style={{ width: '100%' }}>
+                Close Settings
+              </button>
+            )}
+            {hasLocalOverride && (
+              <button 
+                type="button" 
+                onClick={() => resetFirebaseConfig()} 
+                className="btn btn-secondary" 
+                style={{ width: '100%', borderColor: '#ef4444', color: '#f87171', background: 'rgba(239, 68, 68, 0.02)' }}
+              >
+                Clear Local Overrides
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{

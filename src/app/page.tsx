@@ -3,13 +3,12 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Radio, Users, Zap, Disc, Settings } from 'lucide-react';
-import { isFirebaseConfigured, getFirebaseConfig } from '../lib/firebase';
+import { isFirebaseConfigured } from '../lib/firebase';
 import FirebaseConfigWizard from '../components/FirebaseConfigWizard';
 
 export default function Home() {
   const [configured, setConfigured] = useState<boolean>(true);
   const [showWizard, setShowWizard] = useState<boolean>(false);
-  const [activeProjectId, setActiveProjectId] = useState<string>('');
 
   useEffect(() => {
     const isConfigged = isFirebaseConfigured();
@@ -17,11 +16,6 @@ export default function Home() {
       setConfigured(isConfigged);
       if (!isConfigged) {
         setShowWizard(true);
-      } else {
-        const config = getFirebaseConfig();
-        if (config) {
-          setActiveProjectId(config.projectId);
-        }
       }
     }, 0);
   }, []);
@@ -90,23 +84,7 @@ export default function Home() {
           Synchronize audio playing from your host laptop to other devices in real-time. Purely serverless audio sync hosted on Vercel.
         </p>
 
-        {activeProjectId && (
-          <div style={{
-            fontSize: '0.75rem',
-            color: 'var(--text-muted)',
-            marginBottom: '1.5rem',
-            background: 'rgba(255, 255, 255, 0.02)',
-            padding: '0.4rem 0.875rem',
-            borderRadius: '10px',
-            border: '1px solid var(--glass-border)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.4rem'
-          }}>
-            <span style={{ width: '6px', height: '6px', backgroundColor: '#22c55e', borderRadius: '50%' }} />
-            Connected to Firebase: <span style={{ fontFamily: 'monospace' }}>{activeProjectId}</span>
-          </div>
-        )}
+
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '2.5rem' }}>
           <Link href={configured ? "/host" : "#"} onClick={() => !configured && setShowWizard(true)} className="btn btn-primary" style={{ width: '100%' }}>
@@ -154,10 +132,6 @@ export default function Home() {
           onClose={() => {
             setShowWizard(false);
             setConfigured(isFirebaseConfigured());
-            const config = getFirebaseConfig();
-            if (config) {
-              setActiveProjectId(config.projectId);
-            }
           }}
           showCancel={configured}
         />
