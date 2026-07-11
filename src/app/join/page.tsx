@@ -200,19 +200,16 @@ export default function Join() {
             
             if (audioElementRef.current) {
               audioElementRef.current.srcObject = stream;
+              audioElementRef.current.muted = true; // Mute element to bypass browser-specific media buffer delays
               
-              // Play the stream
+              // Play in background to pull WebRTC packets
               audioElementRef.current.play()
                 .then(() => {
-                  setAutoplayBlocked(false);
-                  setAudioStreamActive(true);
                   initAudioVisualizer(stream);
                 })
                 .catch((err) => {
-                  console.warn('Autoplay blocked:', err);
-                  setAutoplayBlocked(true);
-                  setAudioStreamActive(true);
-                  setStatusMessage('Click "Resume Playback" to start audio');
+                  console.warn('Background playback error:', err);
+                  initAudioVisualizer(stream);
                 });
             }
           };
@@ -265,37 +262,46 @@ export default function Join() {
   };
 
   const handleManualResume = () => {
-    if (audioElementRef.current) {
-      audioElementRef.current.play()
+    if (audioContextRef.current) {
+      audioContextRef.current.resume()
         .then(() => {
           setAutoplayBlocked(false);
           setStatusMessage('Synchronized and playing!');
-          if (mediaStreamRef.current) {
-            initAudioVisualizer(mediaStreamRef.current);
-          }
         })
         .catch((err) => {
-          console.error('Manual play failed:', err);
-          setError('Playback blocked by browser settings. Please enable audio for this site.');
+          console.error('AudioContext resume failed:', err);
+          setError('Playback blocked by browser settings. Please click the button to enable audio.');
         });
     }
   };
 
   const initAudioVisualizer = (stream: MediaStream) => {
     try {
-      // Create Web Audio Context & Analyser
+      // Create Web Audio Context with explicit interactive latency hint
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      const audioContext = new AudioContextClass();
+      const audioContext = new AudioContextClass({ latencyHint: 'interactive' });
       audioContextRef.current = audioContext;
 
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 128; // Smaller size for smooth bars visualizer
       analyserRef.current = analyser;
 
-      // Pipe Stream to Analyser (do not connect to destination to avoid duplicating output audio)
+      // Pipe Stream to Analyser and output destination directly with sub-10ms buffer delay
       const source = audioContext.createMediaStreamSource(stream);
       source.connect(analyser);
+      analyser.connect(audioContext.destination);
+
+      // Check if context is blocked/suspended by autoplay policy
+      if (audioContext.state === 'suspended') {
+        setAutoplayBlocked(true);
+        setAudioStreamActive(true);
+        setStatusMessage('Click "Resume Playback" to start audio');
+      } else {
+        setAutoplayBlocked(false);
+        setAudioStreamActive(true);
+        setStatusMessage('Synchronized and playing!');
+      }
 
       // Start rendering loop
       renderVisualizer();
