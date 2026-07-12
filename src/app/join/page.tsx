@@ -16,6 +16,35 @@ import {
 import { getDb } from '../../lib/firebase';
 import { ArrowLeft, Disc, Volume2, VolumeX, AlertCircle, Info, Play, RefreshCw, XCircle } from 'lucide-react';
 
+function mungeSdpForLatency(sdp: string | undefined): string {
+  if (!sdp) return '';
+  let modifiedSdp = sdp;
+  if (modifiedSdp.includes('opus/48000')) {
+    const match = modifiedSdp.match(/a=rtpmap:(\d+) opus\/48000/);
+    if (match) {
+      const payloadType = match[1];
+      const fmtpRegex = new RegExp(`a=fmtp:${payloadType} ([^\\r\\n]+)`);
+      const fmtpMatch = modifiedSdp.match(fmtpRegex);
+      if (fmtpMatch) {
+        let fmtpParams = fmtpMatch[1];
+        fmtpParams = fmtpParams
+          .replace(/;?minptime=\d+/, '')
+          .replace(/;?ptime=\d+/, '')
+          .replace(/;?maxptime=\d+/, '')
+          .trim();
+        const newFmtp = `a=fmtp:${payloadType} ${fmtpParams};minptime=3;ptime=3;maxptime=10`;
+        modifiedSdp = modifiedSdp.replace(fmtpRegex, newFmtp);
+      } else {
+        modifiedSdp = modifiedSdp.replace(
+          `a=rtpmap:${payloadType} opus/48000/2`,
+          `a=rtpmap:${payloadType} opus/48000/2\r\na=fmtp:${payloadType} minptime=3;ptime=3;maxptime=10`
+        );
+      }
+    }
+  }
+  return modifiedSdp;
+}
+
 export default function Join() {
   const [roomCode, setRoomCode] = useState<string>('');
   const [joined, setJoined] = useState<boolean>(false);
@@ -226,7 +255,11 @@ export default function Join() {
 
           try {
             // Apply Offer
-            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const mungedOffer = {
+              type: data.offer.type,
+              sdp: mungeSdpForLatency(data.offer.sdp)
+            };
+            await pc.setRemoteDescription(new RTCSessionDescription(mungedOffer as RTCSessionDescriptionInit));
 
             // Apply all queued ICE candidates
             const queue = iceCandidateQueueRef.current;
@@ -237,10 +270,11 @@ export default function Join() {
 
             // Create and save WebRTC Answer to Firestore
             const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
+            const mungedSdp = mungeSdpForLatency(answer.sdp);
+            await pc.setLocalDescription({ type: 'answer', sdp: mungedSdp });
             
             await updateDoc(peerDocRef, {
-              answer: { sdp: answer.sdp, type: 'answer' }
+              answer: { sdp: mungedSdp, type: 'answer' }
             });
             console.log('Sent WebRTC Answer to host');
           } catch (err) {

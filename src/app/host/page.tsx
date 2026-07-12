@@ -15,6 +15,35 @@ import {
 import { getDb } from '../../lib/firebase';
 import { Disc, Radio, AlertCircle, Users, Power, ArrowLeft, CheckCircle2, Info } from 'lucide-react';
 
+function mungeSdpForLatency(sdp: string | undefined): string {
+  if (!sdp) return '';
+  let modifiedSdp = sdp;
+  if (modifiedSdp.includes('opus/48000')) {
+    const match = modifiedSdp.match(/a=rtpmap:(\d+) opus\/48000/);
+    if (match) {
+      const payloadType = match[1];
+      const fmtpRegex = new RegExp(`a=fmtp:${payloadType} ([^\\r\\n]+)`);
+      const fmtpMatch = modifiedSdp.match(fmtpRegex);
+      if (fmtpMatch) {
+        let fmtpParams = fmtpMatch[1];
+        fmtpParams = fmtpParams
+          .replace(/;?minptime=\d+/, '')
+          .replace(/;?ptime=\d+/, '')
+          .replace(/;?maxptime=\d+/, '')
+          .trim();
+        const newFmtp = `a=fmtp:${payloadType} ${fmtpParams};minptime=3;ptime=3;maxptime=10`;
+        modifiedSdp = modifiedSdp.replace(fmtpRegex, newFmtp);
+      } else {
+        modifiedSdp = modifiedSdp.replace(
+          `a=rtpmap:${payloadType} opus/48000/2`,
+          `a=rtpmap:${payloadType} opus/48000/2\r\na=fmtp:${payloadType} minptime=3;ptime=3;maxptime=10`
+        );
+      }
+    }
+  }
+  return modifiedSdp;
+}
+
 export default function Host() {
   const [roomCode, setRoomCode] = useState<string>('');
   const [sharingAudio, setSharingAudio] = useState<boolean>(false);
@@ -95,8 +124,12 @@ export default function Host() {
       const data = snap.data();
       if (data && data.answer && !pc.remoteDescription) {
         console.log(`Received WebRTC answer from client ${peerId}`);
-        try {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          try {
+            const mungedAnswer = {
+              type: data.answer.type,
+              sdp: mungeSdpForLatency(data.answer.sdp)
+            };
+            await pc.setRemoteDescription(new RTCSessionDescription(mungedAnswer as RTCSessionDescriptionInit));
           
           // Process queued candidates now that remote description is active
           const queue = iceQueuesRef.current.get(peerId) || [];
@@ -124,10 +157,11 @@ export default function Host() {
       
       try {
         const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
+        const mungedSdp = mungeSdpForLatency(offer.sdp);
+        await pc.setLocalDescription({ type: 'offer', sdp: mungedSdp });
         
         await updateDoc(peerDocRef, {
-          offer: { sdp: offer.sdp, type: 'offer' }
+          offer: { sdp: mungedSdp, type: 'offer' }
         });
         console.log(`Sent offer to client ${peerId}`);
       } catch (err) {
@@ -291,11 +325,12 @@ export default function Host() {
 
           // Create offer for this connection
           const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
+          const mungedSdp = mungeSdpForLatency(offer.sdp);
+          await pc.setLocalDescription({ type: 'offer', sdp: mungedSdp });
           
           const peerDocRef = doc(db, 'rooms', roomCode, 'peers', peerId);
           await updateDoc(peerDocRef, {
-            offer: { sdp: offer.sdp, type: 'offer' }
+            offer: { sdp: mungedSdp, type: 'offer' }
           });
         }
       }
