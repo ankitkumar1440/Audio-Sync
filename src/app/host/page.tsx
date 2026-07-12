@@ -253,6 +253,15 @@ export default function Host() {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
+          // @ts-expect-error: latency property is non-standard but supported in Chrome
+          latency: 0,
+          googEchoCancellation: false,
+          googAutoGainControl: false,
+          googNoiseSuppression: false,
+          googHighpassFilter: false,
+          googTypingNoiseDetection: false,
+          googNoiseReduction: false,
+          channelCount: 2
         }
       });
 
@@ -334,13 +343,13 @@ export default function Host() {
       
       <div className="glass-panel" style={{ zIndex: 1 }}>
         {/* Header navigation */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem', gap: '1rem', flexWrap: 'wrap' }}>
           <Link href="/" className="btn btn-secondary" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '0.25rem', fontSize: '0.85rem' }}>
             <ArrowLeft size={16} /> Back
           </Link>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             <span className="pulse-indicator" style={{ backgroundColor: '#22c55e' }}></span>
-            Serverless Firestore Sync
+            Live Sync
           </div>
         </div>
 

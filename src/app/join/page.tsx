@@ -198,6 +198,16 @@ export default function Join() {
             const stream = event.streams[0];
             mediaStreamRef.current = stream;
             
+            // Set playout delay hint to 0 for minimum possible latency (bypasses jitter buffer delay)
+            const receiver = event.receiver;
+            if (receiver && 'playoutDelayHint' in receiver) {
+              try {
+                receiver.playoutDelayHint = 0;
+              } catch (e) {
+                console.warn('Could not set playoutDelayHint:', e);
+              }
+            }
+
             if (audioElementRef.current) {
               audioElementRef.current.srcObject = stream;
               audioElementRef.current.muted = true; // Mute element to bypass browser-specific media buffer delays
@@ -391,13 +401,13 @@ export default function Join() {
 
       <div className="glass-panel" style={{ zIndex: 1 }}>
         {/* Header navigation */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem', gap: '1rem', flexWrap: 'wrap' }}>
           <Link href="/" onClick={cleanup} className="btn btn-secondary" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '0.25rem', fontSize: '0.85rem' }}>
             <ArrowLeft size={16} /> Back
           </Link>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             <span className="pulse-indicator" style={{ backgroundColor: '#22c55e' }}></span>
-            Serverless Firestore Sync
+            Live Sync
           </div>
         </div>
 
