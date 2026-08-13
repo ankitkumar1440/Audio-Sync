@@ -238,7 +238,11 @@ export default function FirebaseConfigWizard({ onClose, showCancel = false }: Fi
           <ol style={{ paddingLeft: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.35rem', lineHeight: '1.4' }}>
             <li>Go to the <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-secondary)', textDecoration: 'underline' }}>Firebase Console</a>.</li>
             <li>Create a new project & add a <strong>Web App</strong>.</li>
-            <li>Build a <strong>Cloud Firestore</strong> database in production or test mode.</li>
+            <li>Create a <strong>Cloud Firestore</strong> database. In the <strong>Rules</strong> tab, set rules to allow read/write for <code>rooms</code> collection:
+              <code style={{ display: 'block', background: 'rgba(0,0,0,0.3)', padding: '0.25rem 0.5rem', borderRadius: '4px', margin: '0.25rem 0', fontSize: '0.75rem' }}>
+                match /rooms/&#123;roomId&#125; &#123; allow read, write: if true; match /&#123;allSubcollections=**&#125; &#123; allow read, write: if true; &#125; &#125;
+              </code>
+            </li>
             <li>Copy the <code>firebaseConfig</code> object and paste it below.</li>
           </ol>
         </div>

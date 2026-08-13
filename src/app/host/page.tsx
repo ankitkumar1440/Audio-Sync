@@ -211,20 +211,27 @@ export default function Host() {
 
         // Listen for new peers joining the room
         const peersRef = collection(db, 'rooms', code, 'peers');
-        const unsubscribePeers = onSnapshot(peersRef, (snapshot) => {
-          snapshot.docChanges().forEach(async (change) => {
-            const peerId = change.doc.id;
-            if (change.type === 'added') {
-              console.log(`Firestore Peer joined: ${peerId}`);
-              setClients((prev) => [...prev, peerId]);
-              await initPeerConnection(peerId, code);
-            } else if (change.type === 'removed') {
-              console.log(`Firestore Peer left: ${peerId}`);
-              closePeerConnection(peerId);
-              setClients((prev) => prev.filter((id) => id !== peerId));
-            }
-          });
-        });
+        const unsubscribePeers = onSnapshot(
+          peersRef, 
+          (snapshot) => {
+            snapshot.docChanges().forEach(async (change) => {
+              const peerId = change.doc.id;
+              if (change.type === 'added') {
+                console.log(`Firestore Peer joined: ${peerId}`);
+                setClients((prev) => [...prev, peerId]);
+                await initPeerConnection(peerId, code);
+              } else if (change.type === 'removed') {
+                console.log(`Firestore Peer left: ${peerId}`);
+                closePeerConnection(peerId);
+                setClients((prev) => prev.filter((id) => id !== peerId));
+              }
+            });
+          },
+          (err) => {
+            console.error('Firestore peers listener error:', err);
+            setError(err.message || 'Missing or insufficient permissions.');
+          }
+        );
 
         roomUnsubscribeRef.current = unsubscribePeers;
       } catch (err) {
@@ -423,9 +430,30 @@ export default function Host() {
             marginBottom: '1.5rem',
             lineHeight: '1.4'
           }}>
-            <AlertCircle size={18} style={{ flexShrink: 0 }} />
-            <div>
+            <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ width: '100%' }}>
               <strong>Audio Share Error:</strong> {error}
+              {(error.toLowerCase().includes('permission') || error.toLowerCase().includes('rules')) && (
+                <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--text-secondary)', background: 'rgba(0,0,0,0.3)', padding: '0.75rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <div style={{ fontWeight: 600, color: '#fef08a', marginBottom: '0.35rem' }}>💡 How to fix Cloud Firestore permissions:</div>
+                  <ol style={{ paddingLeft: '1.1rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <li>Go to <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" style={{ color: '#60a5fa', textDecoration: 'underline' }}>Firebase Console</a> &rarr; Firestore Database &rarr; <strong>Rules</strong> tab.</li>
+                    <li>Update your rules to allow access:</li>
+                  </ol>
+                  <pre style={{ background: '#1e1e1e', padding: '0.5rem', borderRadius: '6px', margin: '0.5rem 0', fontSize: '0.75rem', overflowX: 'auto', color: '#38bdf8' }}>
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /rooms/{roomId} {
+      allow read, write: if true;
+      match /{allSubcollections=**} { allow read, write: if true; }
+    }
+  }
+}`}
+                  </pre>
+                  <div>3. Click <strong>Publish</strong> and retry.</div>
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -166,135 +166,156 @@ export default function Join() {
 
       // 4. Listen for ICE Candidates written by the Host
       const hostCandidatesRef = collection(db, 'rooms', roomCode, 'peers', peerId, 'hostCandidates');
-      const unsubHostCand = onSnapshot(hostCandidatesRef, (snap) => {
-        snap.docChanges().forEach(async (change) => {
-          if (change.type === 'added') {
-            const candidateData = change.doc.data() as RTCIceCandidateInit;
-            const pc = peerConnectionRef.current;
-            if (pc && pc.remoteDescription) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(candidateData));
-              } catch (err) {
-                console.error('Error adding host candidate:', err);
+      const unsubHostCand = onSnapshot(
+        hostCandidatesRef, 
+        (snap) => {
+          snap.docChanges().forEach(async (change) => {
+            if (change.type === 'added') {
+              const candidateData = change.doc.data() as RTCIceCandidateInit;
+              const pc = peerConnectionRef.current;
+              if (pc && pc.remoteDescription) {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+                } catch (err) {
+                  console.error('Error adding host candidate:', err);
+                }
+              } else {
+                // Queue candidate
+                iceCandidateQueueRef.current.push(candidateData);
               }
-            } else {
-              // Queue candidate
-              iceCandidateQueueRef.current.push(candidateData);
             }
-          }
-        });
-      });
+          });
+        },
+        (err) => {
+          console.error('Firestore hostCandidates listener error:', err);
+          setError(err.message || 'Missing or insufficient permissions.');
+        }
+      );
       clientUnsubscribesRef.current.push(unsubHostCand);
 
       // 5. Listen for Offer written by Host to the peer document
-      const unsubPeerDoc = onSnapshot(peerDocRef, async (snap) => {
-        const data = snap.data();
-        if (data && data.offer && !peerConnectionRef.current) {
-          console.log('Received WebRTC Offer from host');
-          setWebrtcState('connecting');
-          setStatusMessage('Establishing synchronized connection...');
-          
-          const pc = new RTCPeerConnection(rtcConfig);
-          peerConnectionRef.current = pc;
-
-          // Send local candidates back to Host
-          pc.onicecandidate = async (event) => {
-            if (event.candidate) {
-              try {
-                const clientCandRef = collection(db, 'rooms', roomCode, 'peers', peerId, 'clientCandidates');
-                await addDoc(clientCandRef, event.candidate.toJSON());
-              } catch (err) {
-                console.error('Error sending client candidate:', err);
-              }
-            }
-          };
-
-          pc.onconnectionstatechange = () => {
-            console.log(`WebRTC Connection State: ${pc.connectionState}`);
-            if (pc.connectionState === 'connected') {
-              setWebrtcState('connected');
-              setStatusMessage('Synchronized and playing!');
-            } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-              setWebrtcState('disconnected');
-              setStatusMessage('Connection lost. Waiting to reconnect...');
-              setAudioStreamActive(false);
-            }
-          };
-
-          // Receive Host audio stream
-          pc.ontrack = (event) => {
-            console.log('Received audio track from host');
-            const stream = event.streams[0];
-            mediaStreamRef.current = stream;
+      const unsubPeerDoc = onSnapshot(
+        peerDocRef, 
+        async (snap) => {
+          const data = snap.data();
+          if (data && data.offer && !peerConnectionRef.current) {
+            console.log('Received WebRTC Offer from host');
+            setWebrtcState('connecting');
+            setStatusMessage('Establishing synchronized connection...');
             
-            // Set playout delay hint to 0 for minimum possible latency (bypasses jitter buffer delay)
-            const receiver = event.receiver;
-            if (receiver && 'playoutDelayHint' in receiver) {
-              try {
-                receiver.playoutDelayHint = 0;
-              } catch (e) {
-                console.warn('Could not set playoutDelayHint:', e);
+            const pc = new RTCPeerConnection(rtcConfig);
+            peerConnectionRef.current = pc;
+
+            // Send local candidates back to Host
+            pc.onicecandidate = async (event) => {
+              if (event.candidate) {
+                try {
+                  const clientCandRef = collection(db, 'rooms', roomCode, 'peers', peerId, 'clientCandidates');
+                  await addDoc(clientCandRef, event.candidate.toJSON());
+                } catch (err) {
+                  console.error('Error sending client candidate:', err);
+                }
               }
-            }
-
-            if (audioElementRef.current) {
-              audioElementRef.current.srcObject = stream;
-              audioElementRef.current.muted = true; // Mute element to bypass browser-specific media buffer delays
-              
-              // Play in background to pull WebRTC packets
-              audioElementRef.current.play()
-                .then(() => {
-                  initAudioVisualizer(stream);
-                })
-                .catch((err) => {
-                  console.warn('Background playback error:', err);
-                  initAudioVisualizer(stream);
-                });
-            }
-          };
-
-          try {
-            // Apply Offer
-            const mungedOffer = {
-              type: data.offer.type,
-              sdp: mungeSdpForLatency(data.offer.sdp)
             };
-            await pc.setRemoteDescription(new RTCSessionDescription(mungedOffer as RTCSessionDescriptionInit));
 
-            // Apply all queued ICE candidates
-            const queue = iceCandidateQueueRef.current;
-            for (const candidateData of queue) {
-              await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+            pc.onconnectionstatechange = () => {
+              console.log(`WebRTC Connection State: ${pc.connectionState}`);
+              if (pc.connectionState === 'connected') {
+                setWebrtcState('connected');
+                setStatusMessage('Synchronized and playing!');
+              } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                setWebrtcState('disconnected');
+                setStatusMessage('Connection lost. Waiting to reconnect...');
+                setAudioStreamActive(false);
+              }
+            };
+
+            // Receive Host audio stream
+            pc.ontrack = (event) => {
+              console.log('Received audio track from host');
+              const stream = event.streams[0];
+              mediaStreamRef.current = stream;
+              
+              // Set playout delay hint to 0 for minimum possible latency (bypasses jitter buffer delay)
+              const receiver = event.receiver;
+              if (receiver && 'playoutDelayHint' in receiver) {
+                try {
+                  receiver.playoutDelayHint = 0;
+                } catch (e) {
+                  console.warn('Could not set playoutDelayHint:', e);
+                }
+              }
+
+              if (audioElementRef.current) {
+                audioElementRef.current.srcObject = stream;
+                audioElementRef.current.muted = true; // Mute element to bypass browser-specific media buffer delays
+                
+                // Play in background to pull WebRTC packets
+                audioElementRef.current.play()
+                  .then(() => {
+                    initAudioVisualizer(stream);
+                  })
+                  .catch((err) => {
+                    console.warn('Background playback error:', err);
+                    initAudioVisualizer(stream);
+                  });
+              }
+            };
+
+            try {
+              // Apply Offer
+              const mungedOffer = {
+                type: data.offer.type,
+                sdp: mungeSdpForLatency(data.offer.sdp)
+              };
+              await pc.setRemoteDescription(new RTCSessionDescription(mungedOffer as RTCSessionDescriptionInit));
+
+              // Apply all queued ICE candidates
+              const queue = iceCandidateQueueRef.current;
+              for (const candidateData of queue) {
+                await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+              }
+              iceCandidateQueueRef.current = [];
+
+              // Create and save WebRTC Answer to Firestore
+              const answer = await pc.createAnswer();
+              const mungedSdp = mungeSdpForLatency(answer.sdp);
+              await pc.setLocalDescription({ type: 'answer', sdp: mungedSdp });
+              
+              await updateDoc(peerDocRef, {
+                answer: { sdp: mungedSdp, type: 'answer' }
+              });
+              console.log('Sent WebRTC Answer to host');
+            } catch (err) {
+              console.error('Error establishing peer connection:', err);
+              setError('Error setting up WebRTC handshake.');
             }
-            iceCandidateQueueRef.current = [];
-
-            // Create and save WebRTC Answer to Firestore
-            const answer = await pc.createAnswer();
-            const mungedSdp = mungeSdpForLatency(answer.sdp);
-            await pc.setLocalDescription({ type: 'answer', sdp: mungedSdp });
-            
-            await updateDoc(peerDocRef, {
-              answer: { sdp: mungedSdp, type: 'answer' }
-            });
-            console.log('Sent WebRTC Answer to host');
-          } catch (err) {
-            console.error('Error establishing peer connection:', err);
-            setError('Error setting up WebRTC handshake.');
           }
+        },
+        (err) => {
+          console.error('Firestore peerDoc listener error:', err);
+          setError(err.message || 'Missing or insufficient permissions.');
         }
-      });
+      );
       clientUnsubscribesRef.current.push(unsubPeerDoc);
 
       // 6. Listen for Room teardown (if Host deletes the room document)
-      const unsubRoom = onSnapshot(roomDocRef, (snap) => {
-        if (!snap.exists()) {
-          setError('The host disconnected. The session has ended.');
-          setStatusMessage('Session ended.');
-          cleanup();
-          setJoined(false);
-          setAudioStreamActive(false);
+      const unsubRoom = onSnapshot(
+        roomDocRef, 
+        (snap) => {
+          if (!snap.exists()) {
+            setError('The host disconnected. The session has ended.');
+            setStatusMessage('Session ended.');
+            cleanup();
+            setJoined(false);
+            setAudioStreamActive(false);
+          }
+        },
+        (err) => {
+          console.error('Firestore roomDoc listener error:', err);
+          setError(err.message || 'Missing or insufficient permissions.');
         }
-      });
+      );
       clientUnsubscribesRef.current.push(unsubRoom);
 
     } catch (err) {
@@ -557,9 +578,30 @@ export default function Join() {
             lineHeight: '1.4',
             textAlign: 'left'
           }}>
-            <AlertCircle size={18} style={{ flexShrink: 0 }} />
-            <div>
+            <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ width: '100%' }}>
               <strong>Connection Error:</strong> {error}
+              {(error.toLowerCase().includes('permission') || error.toLowerCase().includes('rules')) && (
+                <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--text-secondary)', background: 'rgba(0,0,0,0.3)', padding: '0.75rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <div style={{ fontWeight: 600, color: '#fef08a', marginBottom: '0.35rem' }}>💡 How to fix Cloud Firestore permissions:</div>
+                  <ol style={{ paddingLeft: '1.1rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <li>Go to <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" style={{ color: '#60a5fa', textDecoration: 'underline' }}>Firebase Console</a> &rarr; Firestore Database &rarr; <strong>Rules</strong> tab.</li>
+                    <li>Update your rules to allow access:</li>
+                  </ol>
+                  <pre style={{ background: '#1e1e1e', padding: '0.5rem', borderRadius: '6px', margin: '0.5rem 0', fontSize: '0.75rem', overflowX: 'auto', color: '#38bdf8' }}>
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /rooms/{roomId} {
+      allow read, write: if true;
+      match /{allSubcollections=**} { allow read, write: if true; }
+    }
+  }
+}`}
+                  </pre>
+                  <div>3. Click <strong>Publish</strong> and retry.</div>
+                </div>
+              )}
             </div>
           </div>
         )}
