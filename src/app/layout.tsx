@@ -15,6 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Audiosync | Low-Latency Real-time Audio Sync",
   description: "Synchronize audio playing from a host laptop to multiple receivers in real-time with ultra-low latency.",
+
 };
 
 export default function RootLayout({

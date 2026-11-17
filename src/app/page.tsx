@@ -22,6 +22,9 @@ export default function Home() {
 
   return (
     <main className="app-container">
+      {/* Site verification meta tags */}
+      <meta name="zap-site-verification" content="zap-verify-921622f5-5ad3-4f0c-a154-258294bf9952" />
+      <meta name="owner-email" content="akkr1440@gmail.com" />
       {/* Decorative background glow circles */}
       <div 
         style={{
