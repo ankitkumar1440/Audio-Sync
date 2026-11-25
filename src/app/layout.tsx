@@ -17,6 +17,10 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
   title: "Audiosync | Low-Latency Real-time Audio Sync",
   description: "Synchronize audio playing from a host laptop to multiple receivers in real-time with ultra-low latency.",
+  other: {
+    "zap-site-verification": "zap-verify-f52e9329-564a-4a9e-b080-fef7d02a952f",
+    "owner-email": "akkr1440@gmail.com",
+  },
 };
 
 export default function RootLayout({
